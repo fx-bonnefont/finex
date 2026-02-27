@@ -1,0 +1,16 @@
+[project]
+name = "finex"
+version = "0.2.0"
+description = "Pipeline de criblage virtuel pour le repositionnement de médicaments (Long COVID / xenoAMP)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "chembl-webresource-client>=0.10.9",
+    "python-dotenv>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pandas>=2.0",
+    "rdkit>=2025.9.5",
+    "requests>=2.32.5",
+    "tqdm>=4.67.3",
+    "pypdf>=6.7.3",
+]
