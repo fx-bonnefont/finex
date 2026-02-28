@@ -31,7 +31,7 @@ POLL_INTERVAL = 10
 MAX_WAIT = 600
 
 # Docking
-DEFAULT_EXHAUSTIVENESS = 64
+DEFAULT_EXHAUSTIVENESS = 8
 
 # Grid box (calibré sur résidus 546-550 du peptide xenoAMP)
 GRID_CENTER_X = -1.0

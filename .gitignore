@@ -4,7 +4,7 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
 
 # Virtual environments
 .venv/
@@ -12,11 +12,27 @@ wheels/
 # Secrets
 .env
 
-# Données pipeline (volumineux, générés)
-data/
-
-# Sorties (générées)
-output/
-
 # OS
 .DS_Store
+
+# Claude
+.claude/
+
+# --- Données pipeline (volumineuses, générées localement) ---
+# Voir README.md pour la structure attendue et les fichiers à télécharger
+
+# Récepteur et ligands
+data/receptor_xenoAMP.pdb
+data/receptor_xenoAMP.pdbqt
+data/ligands_in/
+data/ligands_pdbqt/
+data/sdf_drop/
+
+# Résultats de docking
+data/docking_results/
+
+# Cache des bases de données suppléments
+data/supplements_cache/
+
+# Sorties (Excel, visualisation)
+output/

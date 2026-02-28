@@ -245,6 +245,33 @@ def cmd_fetch_supplements(args):
         print("Lancez le docking avec : python finex.py run")
 
 
+def cmd_report(args):
+    """Recompile le fichier Excel avec les résultats de docking disponibles."""
+    from finex.analyze_results import export_xlsx, load_drug_names, parse_all_scores
+
+    logger = logging.getLogger("finex")
+
+    scores = parse_all_scores(DOCKING_RESULTS_DIR)
+    if not scores:
+        logger.error("Aucun résultat de docking trouvé. Lancez d'abord : python finex.py run")
+        sys.exit(1)
+
+    drug_names = load_drug_names(LIGANDS_IN_DIR)
+    xlsx_path = export_xlsx(scores, RESULTS_XLSX, drug_names=drug_names)
+
+    total_sdf = len(list(LIGANDS_IN_DIR.glob("*.sdf")))
+    logger.info("Rapport : %d/%d molécules dockées.", len(scores), total_sdf)
+    logger.info("Fichier mis à jour : %s", xlsx_path)
+
+    top_n = min(args.top, len(scores))
+    print(f"\n{'Rang':<6} {'ID':<22} {'Nom':<30} {'Score (kcal/mol)'}")
+    print("-" * 82)
+    for i, (chembl_id, score) in enumerate(scores[:top_n], 1):
+        name = drug_names.get(chembl_id, "")
+        print(f"{i:<6} {chembl_id:<22} {name:<30} {score:.1f}")
+    print(f"\n{len(scores)}/{total_sdf} molécules dockées — classement complet : {xlsx_path}")
+
+
 def cmd_viz(args):
     """Génère les fichiers de visualisation pour les top N candidats."""
     from finex.analyze_results import load_drug_names, parse_all_scores
@@ -293,8 +320,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Paramètre exhaustiveness de Vina (défaut : {DEFAULT_EXHAUSTIVENESS})",
     )
     run_parser.add_argument(
-        "--max-torsions", type=int, default=20,
-        help="Exclure les ligands avec plus de N torsions (défaut : 20)",
+        "--max-torsions", type=int, default=15,
+        help="Exclure les ligands avec plus de N torsions (défaut : 15)",
     )
     run_parser.add_argument(
         "--fresh-db", action="store_true",
@@ -346,6 +373,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Lister les aliments disponibles dans FooDB et quitter",
     )
     sup_parser.set_defaults(func=cmd_fetch_supplements)
+
+    # --- report ---
+    report_parser = subparsers.add_parser("report", help="Recompiler le fichier Excel avec les résultats disponibles")
+    report_parser.add_argument(
+        "--top", type=int, default=20,
+        help="Nombre de meilleurs candidats à afficher (défaut : 20)",
+    )
+    report_parser.set_defaults(func=cmd_report)
 
     # --- viz ---
     viz_parser = subparsers.add_parser("viz", help="Générer les fichiers de visualisation")

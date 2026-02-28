@@ -17,7 +17,7 @@ Fichiers attendus dans data/supplements_cache/ :
 
 import csv
 import logging
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, Process, Queue, cpu_count
 from pathlib import Path
 
 from tqdm import tqdm
@@ -58,14 +58,20 @@ def _generate_3d_worker(args: tuple) -> dict:
 
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
-            return {"status": "skip"}
+            return {"status": "skip", "id": compound_id}
 
         if not all(a.GetAtomicNum() in _ORGANIC_ATOMS for a in mol.GetAtoms()):
-            return {"status": "skip"}
+            return {"status": "skip", "id": compound_id}
+
+        # Filtre torsions AVANT l'embedding (calcul 2D, instantané)
+        # Cohérent avec le filtre --max-torsions du docking (défaut 20)
+        from rdkit.Chem import Lipinski
+        if Lipinski.NumRotatableBonds(mol) > 15:
+            return {"status": "skip", "id": compound_id}
 
         mol = Chem.AddHs(mol)
         if AllChem.EmbedMolecule(mol, AllChem.ETKDGv3()) == -1:
-            return {"status": "skip"}
+            return {"status": "skip", "id": compound_id}
         AllChem.MMFFOptimizeMolecule(mol, maxIters=200)
 
         mol.SetProp("_Name", name[:80])
@@ -77,34 +83,66 @@ def _generate_3d_worker(args: tuple) -> dict:
         writer.close()
         return {"status": "ok"}
     except Exception:
-        return {"status": "error"}
+        return {"status": "skip", "id": compound_id}
 
 
 def _run_3d_generation(entries: list[tuple], output_dir: Path) -> int:
-    """Lance la génération 3D en parallèle. Retourne le nombre de succès."""
+    """Lance la génération 3D en parallèle. Retourne le nombre de succès.
+
+    Les composés définitivement non-générables (métal, SMILES invalide, embedding
+    impossible) reçoivent un marqueur .skip pour ne plus être retentés.
+    """
     if not entries:
         return 0
     output_dir.mkdir(parents=True, exist_ok=True)
-    num_workers = cpu_count()
-    ok = errors = skipped = 0
-    with Pool(processes=num_workers) as pool:
-        for res in tqdm(
-            pool.imap_unordered(_generate_3d_worker, entries, chunksize=16),
-            total=len(entries),
-            desc="Génération 3D",
-        ):
-            match res["status"]:
-                case "ok":
-                    ok += 1
-                case "skip":
-                    skipped += 1
-                case "error":
-                    errors += 1
+
+    # Petits lots : traitement séquentiel avec timeout par molécule
+    # Grands lots : Pool multiprocessing
+    use_pool = len(entries) >= 200
+
+    ok = skipped = 0
+
+    def _record(res: dict) -> None:
+        nonlocal ok, skipped
+        if res["status"] == "ok":
+            ok += 1
+        else:
+            skipped += 1
+            cid = res.get("id", "")
+            if cid:
+                (output_dir / f"{cid}.skip").touch()
+
+    if use_pool:
+        with Pool(processes=cpu_count()) as pool:
+            for res in tqdm(
+                pool.imap_unordered(_generate_3d_worker, entries, chunksize=16),
+                total=len(entries),
+                desc="Génération 3D",
+            ):
+                _record(res)
+    else:
+        # Timeout par molécule via Process individuel (évite les blocages RDKit)
+        _TIMEOUT = 30  # secondes max par composé
+        for entry in tqdm(entries, total=len(entries), desc="Génération 3D"):
+            q: Queue = Queue()
+            p = Process(target=_worker_enqueue, args=(entry, q))
+            p.start()
+            p.join(timeout=_TIMEOUT)
+            if p.is_alive():
+                p.kill()
+                p.join()
+                _record({"status": "skip", "id": entry[0]})
+            else:
+                _record(q.get() if not q.empty() else {"status": "skip", "id": entry[0]})
+
     if skipped:
         logger.info("%d composé(s) ignorés (métal, embedding impossible).", skipped)
-    if errors:
-        logger.warning("%d erreur(s) de génération ignorées.", errors)
     return ok
+
+
+def _worker_enqueue(args: tuple, q: Queue) -> None:
+    """Wrapper pour exécuter _generate_3d_worker et mettre le résultat dans une Queue."""
+    q.put(_generate_3d_worker(args))
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +271,7 @@ def _cmaup_parse_ingredients(
                 continue
 
             compound_id = f"CMAUP_{raw_id}"
-            if (output_dir / f"{compound_id}.sdf").exists():
+            if (output_dir / f"{compound_id}.sdf").exists() or (output_dir / f"{compound_id}.skip").exists():
                 continue
 
             smiles = row.get("SMILES", "").strip()
@@ -352,28 +390,37 @@ def _foodb_parse_compounds(
     output_dir: Path,
     allowed_ids: set[str] | None,
 ) -> list[tuple]:
-    """Parse Compound.csv FooDB → liste de tuples (id, name, smiles, dir)."""
+    """Parse Compound.csv FooDB → liste de tuples (id, name, smiles, dir).
+
+    Note : les colonnes du CSV FooDB sont décalées par rapport au header —
+    le SMILES réel est à l'index 7 (colonne nommée 'cas_number' dans le header).
+    On utilise un accès positionnel pour contourner ce désalignement.
+    """
     entries = []
     with FOODB_COMPOUND_FILE.open(encoding="utf-8", errors="replace") as f:
-        reader = csv.DictReader(f)
+        reader = csv.reader(f)
+        next(reader)  # skip header
         for row in reader:
-            raw_id = row.get("id", "").strip()
+            if len(row) < 8:
+                continue
+
+            raw_id = row[0].strip()
             if not raw_id:
                 continue
 
             if allowed_ids is not None and raw_id not in allowed_ids:
                 continue
 
-            public_id = row.get("public_id", "").strip() or raw_id
+            public_id = row[1].strip() or raw_id
             compound_id = f"FOODB_{public_id}"
-            if (output_dir / f"{compound_id}.sdf").exists():
+            if (output_dir / f"{compound_id}.sdf").exists() or (output_dir / f"{compound_id}.skip").exists():
                 continue
 
-            smiles = row.get("moldb_smiles", "").strip()
+            smiles = row[7].strip()  # SMILES réel (décalage CSV FooDB)
             if not smiles or smiles in ("", "N/A", "None"):
                 continue
 
-            name = row.get("name", "").strip() or compound_id
+            name = row[2].strip() or compound_id
 
             entries.append((compound_id, name, smiles, str(output_dir)))
     return entries
