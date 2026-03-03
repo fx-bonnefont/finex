@@ -15,9 +15,6 @@ wheels/
 # OS
 .DS_Store
 
-# Claude
-.claude/
-
 # --- Données pipeline (volumineuses, générées localement) ---
 # Voir README.md pour la structure attendue et les fichiers à télécharger
 
